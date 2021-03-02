@@ -1,0 +1,776 @@
+---
+title: "Tarea Minería de Datos y Modeliación predictiva"
+author: "Marina Molina Ruiz"
+date: "11-02-2021"
+output: 
+  word_document: default
+  pdf_document: default
+always_allow_html: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Modelos de regresión para la predicción de la radiación natural
+
+Se han recogido datos reales sobre distintas variables relacionadas con los niveles de radiación natural de la tierra. Las mediciones fueron recogidas durante el año 2018 en intervalos de 1 hora. Los datos se encuentran en el conjunto **Rad2018.xls**. 
+
+Por tanto, el objetivo es inspeccionar los datos y realizar los siguientes pasos:
+
+1. Análisis descriptivo de datos en el conjunto de training. Número de observaciones, número y naturaleza de variables, datos erróneos etc. Distribuciones de variables. 
+
+2. Análisis de valores extremos (outliers). Decisiones
+
+3. Análisis de valores perdidos. Imputaciones. 
+
+4. Transformaciones de variables y relaciones con las variables objetivo. 
+
+5. Modelos de regresión lineal para predecir la Tasa de Dosis (TD) de radiación
+
+  - Modelos manuales
+  - Selección de variables clásica
+  - Selección de variables aleatoria
+  - Análisis de estabilidad en esquema Tr/Tst y validación cruzada repetida.
+  - Selección del modelo ganador
+  - Interpretación de los coeficientes
+  
+6. Modelos de regresión logística para predecir los picos de radiación (PicoRad)
+
+  - Modelos manuales
+  - Selección de variables clásica
+  - Selección de variables aleatoria
+  - Análisis de estabilidad en esquema Tr/Tst y validación cruzada repetida.
+  - Selección del modelo ganador
+  - Punto de corte de la probabilidad estimada
+  - Interpretación de los coeficientes
+
+
+Finalmente será elegido un modelo final para TD y PicoRad en base a la relación entre capacidad predictiva y complejidad. A jugar!!
+
+Se entregará:
+
+ *Informe en PDF (máximo 20 páginas)* en el que se exlicarán detalladamente los pasos seguidos incluyendo los códigos y salidas más relevantes. Imprescindible mostrar los modelos finales (summary). Es muy importante comentar y **justificar razonadamente** las decisiones que se toman. Es un informe donde se "venden" los modelos así que hay que ser convincentes!
+
+## Información sobre las variables
+
+Os cuento sobre las variables del archivo de radiación.
+
+- TD (Tasa de Dosis): Medida de los niveles de radiación natural en microSieverts [VARIABLE OBJETIVO]
+
+- Radon: Concentración de gas radón producto de la descomposición del uranio medido en Bequerelios por volumen (bq/m3)
+
+- Desc.Radon: Concentración de descendientes del radón en mismas unidades.
+
+- Pres (Presión atmosférica): milibares
+
+- Temp (Temperatura): grados celsius
+
+- HR (Humedad relativa): En %
+
+- HS (Humedad del suelo): En %
+
+- Vviento (Velocidad del viento): km/h
+
+- Temp.Su (Temperatura del suelo): En ºC
+
+- Luvia (Cantidad de lluvia): l/m2
+
+- Irrad.Solar (Irradiación solar): W/m2
+
+- PicoRad: Dicotómica, 1 si existe pico de radiación (TD>160) [VARIABLE OBJETIVO]
+
+
+
+## Lectura e inspección inicial
+
+Dado que es un archivo RDS, se utiliza readRDS() para la lectura. Se comprueba que es correcto y se presentan las primeras tablas de inspección. 
+```{r cars, message=FALSE, warning=FALSE}
+library(xts)
+library(forecast)
+library(grid)
+library(gridExtra)
+library(ggplot2)
+library(psych)
+library(lubridate)
+library(dplyr)
+library(corrplot)
+library(caret)
+library(lmSupport)
+library(questionr)
+
+# Carga de funciones
+source("C:/Users/marin/Desktop/Marina/Maestria/Clases/6. Mineria de datos y modelización predictivia/primera parte/documentos/Datos/Funciones_R.R")
+
+# Lectura del archivo
+Radiacion <- readRDS('C:/Users/marin/Desktop/Marina/Maestria/Clases/6. Mineria de datos y modelización predictivia/primera parte/documentos/Tarea final/Rad2018.RDS')
+
+#Inpsección rápida
+#str(Radiacion)
+#summary(Radiacion)
+
+# Inspección gráfica 1: Boxplot
+box<-dfplot_box(data.frame(Radiacion)[,-1]) # Devuelve una lista de gráficos. Hay que forzar al objeto a ser data.frame!!!!
+marrangeGrob(box, ncol = 4, nrow = 3) # Se representa en una rejilla de 4x3
+
+# Inspección gráfica 2: Histograma
+his<-dfplot_his(data.frame(Radiacion)[,-1])
+marrangeGrob(his, ncol = 4, nrow = 3)
+```
+
+Este es el aspecto del archivo. Ahora vamos a connvertirlo a serie temporal y representarlo gráficamente.
+
+## Visualización de datos temporales
+
+Dado que el archivo de datos propuesto tiene caracter temporal, es de mucha ayuda la representación de las variables como series de tiempo. De esta forma se puede ver rápidamente los periodos de datos faltantes,la evolución de las variables y de sus posibles relaciones etc. 
+
+Es posible transformar los data.frame() en objetos xts() para la visualización y selección temporales.
+```{r, warning=FALSE}
+# crear serie temporal periodo completo
+Rad_tmp<-xts(as.matrix(Radiacion[,-1]), order.by = Radiacion$Fecha)
+
+# Representación de variables objetivo
+autoplot(Rad_tmp$TD)
+#autoplot(Rad_tmp$PicoRad) # Es una variable binaria...
+
+# Representación de imputs
+
+# Radón y descendientes
+autoplot(Rad_tmp[,2:3])
+
+# Presión
+autoplot(Rad_tmp[,4])
+
+# Temperatura
+autoplot(Rad_tmp[,5])
+
+# Humedad Relativa
+autoplot(Rad_tmp[,6])
+
+# Velocidad del viento y lluvia
+autoplot(Rad_tmp[,7:8])
+
+# Irradiación Solar
+autoplot(Rad_tmp[,9])
+
+
+```
+
+Es interesante manejar las opciones de selección de ventanas temporales para poder valorar el comportamiento local de los datos y evaluar la calidad de las imputaciones, predicciones etc. Os dejo unos ejemplos.
+
+```{r}
+# Seleccionar periodos en xts
+
+# Mes de enero (picos de radiación)
+enero<-Rad_tmp['2018-01']
+en<-autoplot(enero[,10])
+
+# Mes de Agosto 
+agosto<-Rad_tmp['2018-08']
+aug<-autoplot(agosto)
+
+# Hasta marzo (Tempreatura)
+hastaMarzo<-Rad_tmp['/2018-03']
+hMar<-autoplot(hastaMarzo[,5])
+
+# Desde Noviembre (Descendientes de radon)
+desNov<-Rad_tmp['2018-11/']
+dNov<-autoplot(desNov[,3])
+
+# Mostrar gráficos de agosto
+
+```
+
+Este análisis temporal no puede permirtir identificar comportamientos periódicos de tal forma que podemos generar variables derivadas de la fecha e introducirlas en el modelado (trimestre, semestre, semana, dia/noche...) Para ello es interesante consultar la librería *lubridate* o utilizar *cut.POSIXt*. 
+
+Suerte! 
+
+
+##1. Análisis descriptivo en el conjunto de training
+
+Tenemos un data frame con 13 variables y 8760 observaciones de los cuales tenemos missings. Se detecta errores en las variables que se corregirán, la variable lluvia se pasa a factor puesto que tiene muchos valores en 0 y valores muy altos alejados de la media, entonces toma valor 1 cuando el valor 1/m2 de lluvia es mayor a 0, puesto que indica presencia de lluvia. 
+
+En la variable Isolar tenemos el 50% de valores que son 0, por lo cual se genera una variable adicional dicotómica: "Isolar_dicot" donde valores diferentes de 0 toman valor 1. Asimismo las variables "Desc.Rn" y "Vviento" tienen outliers, por lo cual antes de pasar a missing e imputarlos realicé un reemplazo de variables tomando el percentil 99% como referencia, que es hasta donde los valores no se alejan demasiado de la media.
+
+Se genera dos variables adicionales "dia_noche" y "trimestre" para identificar comportamientos periódicos. Luego ordenamos las variables por numérico y categórico.
+
+```{r}
+#observamos que hay missings en el archivo
+str(Radiacion)
+any(is.na(Radiacion))
+
+#1 ERRORES EN TIPOS DE VARIABLES
+#Tranformacion de variable, Variable numerica Isolar a factor
+quantile(Radiacion["Isolar"], na.rm = TRUE, c(0.01,0.1,0.2,0.3,0.4,0.5,0.55,0.6,0.7,0.8,0.9,0.95,0.99,1)) #50% son 0
+Radiacion$Isolar<-as.numeric(Radiacion$Isolar)
+Radiacion$Isolar_dicot <- replace(Radiacion$Isolar, which(Radiacion$Isolar!=0), 1)
+
+#Tranformacion variable, Desc.Rn 
+quantile(Radiacion["Desc.Rn"], na.rm = TRUE, c(0.01,0.05,0.1,0.9,0.95,0.99))
+Radiacion$Desc.Rn<- replace(Radiacion$Desc.Rn, which(Radiacion$Desc.Rn>=77.641667), 77.641667)
+
+#Transformacion variable, Vviento
+quantile(Radiacion["Vviento"], na.rm = TRUE, c(0.01,0.05,0.1,0.9,0.95,0.99,1))
+Radiacion$Vviento<- replace(Radiacion$Vviento, which(Radiacion$Vviento>=36.253920), 36.253920)
+
+#Nueva variable, Variable numerica lluvia a factor
+Radiacion$Lluvia_factor<-as.numeric(Radiacion$Lluvia)
+Radiacion$Lluvia_factor<-replace(Radiacion$Lluvia, which(Radiacion$Lluvia!=0.0), 1)
+
+#Nueva variable dia_noche
+Radiacion$Hora <- hour(Radiacion$Fecha)
+Radiacion$dia1_noche0 <- ifelse( Radiacion$Hora<7 | 19<Radiacion$Hora, "0","1" )
+#noche=0, dia=1
+
+#Nueva variable trimestre
+Radiacion <- Radiacion %>% mutate(trimestre = quarter(Fecha, with_year = FALSE, fiscal_start = 1))
+
+#Ordenamos variables
+names(Radiacion)
+str(Radiacion)
+#Rad_date <- subset(Radiacion,select=c(1)) #no incluyo var fecha puesto que actua como un ID
+Rad_Numeric<-subset(Radiacion,select=-c(1,12:18))
+names(Rad_Numeric)
+Rad_factor <- lapply(subset(Radiacion, select = c(13,14,15,17,18)), factor)
+names(Rad_factor)
+
+RadiacionT<-cbind(Rad_Numeric, Rad_factor) #data ordenado
+names(RadiacionT)
+summary(RadiacionT)
+
+his<-dfplot_his(data.frame(RadiacionT)[,c(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15)])
+marrangeGrob(his, ncol = 4, nrow = 3)
+
+```
+
+##2. Análisis de valores extremos (outliers). Decisiones
+
+Definimos la variable objetivo e input para trabajar con las segundas. El porcentaje de atípicos no es alta ( Rn. con 0.012557078, Desc.Rn con 0.016210046 y Pres con 0.002739726), por lo cual se pasó a missing, resultando con 1786 missing.
+
+```{r}
+names(RadiacionT)
+varObjCont<-RadiacionT$TD
+varObjBin<-RadiacionT$PicoRad
+input<-as.data.frame(RadiacionT[,-c(1,11)]) 
+names(input)
+
+#Distribuciones numéricas
+psych::describe(Filter(is.numeric, input))
+
+# % de atipicos por variable
+sapply(Filter(is.numeric, input),function(x) atipicosAmissing(x)[[2]])/nrow(input)
+
+#modifico los atipicos a missing
+input[,as.vector(which(sapply(input, class)=="numeric"))]<-sapply(Filter(is.numeric, input),function(x) atipicosAmissing(x)[[1]])
+sum(is.na(input))
+
+```
+
+##3. Análisis de valores perdidos. Imputaciones.
+
+Existe correlación entre la variable lluvia e isolar con su correspondiente factor. Obtenemos la proporción de missings por variable y observación. Luego imputamos con aleatorio sobre las variables cuantitativas y cualitativas. En el gráfico podemos observar una mejor distribucion de los datos, pero más adelante se trabajará en ello. 
+
+```{r}
+#busco si existe algun patron en los missing
+corrplot(cor(is.na(input[colnames(input)[colSums(is.na(input))>0]])),method = "ellipse",type = "upper") #hay correlacion entre rn y DescRn
+
+#Proporción de missings por variable y observación
+input$prop_missings<-apply(is.na(input),1,mean) # Por observación
+summary(input$prop_missings)
+
+prop_missingsVars<-apply(is.na(input),2,mean) # Por variable
+prop_missingsVars
+
+# Imputaciones
+# Imputo todas las cuantitativas,imputación con aleatorio
+input[,as.vector(which(sapply(input, class)=="numeric"))]<-sapply(
+  Filter(is.numeric, input),function(x) Hmisc::impute(x,"random"))
+
+# Imputo todas las cualitativas, imputación con aleatorio
+input[,as.vector(which(sapply(input, class)=="factor"))]<-sapply(Filter(is.factor, input),function(x) ImputacionCuali(x,"aleatorio"))
+
+# A veces se cambia el tipo de factor a character al imputar, así que hay que indicarle que es factor
+input[,as.vector(which(sapply(input, class)=="character"))] <- lapply(
+  input[,as.vector(which(sapply(input, class)=="character"))] , factor)
+
+# Reviso que no queden datos missings
+summary(input)
+any(is.na(input))
+
+#Podemos graficar el dataset
+par(mfrow=c(3,3))
+lista_his<-dfplot_his(input)
+gridExtra::marrangeGrob(lista_his,nrow=3,ncol=2)
+
+# Una vez finalizado este proceso, se puede considerar que los datos estan depurados. Los guardamos
+saveRDS(cbind(varObjBin,varObjCont,input),"Tarea_RadiacionT")
+
+```
+##4. Transformaciones de variables y relaciones con las variables objetivo.
+
+Procedemos con las transformaciones de las variables continuas para conseguir linealidad frente a la variable objetivo. Luego definimos variable objetivo binaria y continua e input.
+
+```{r}
+#lectura datos
+datos <- readRDS("C:/Users/marin/Desktop/Marina/Maestria/Clases/6. Mineria de datos y modelización predictivia/primera parte/documentos/Tarea final/Tarea_RadiacionT")
+names(datos)
+
+#Separo variables objetivo
+varObjCont<-datos$varObjCont
+varObjBin<-datos$varObjBin
+input<-as.data.frame(datos[,-c(1,2)]) 
+names(input)
+
+#Creo la variable aleatoria
+input$aleatorio <- runif(nrow(input))
+input$aleatorio2 <- runif(nrow(input))
+
+#Obtengo la importancia de las variables
+graficoVcramer(input,varObjCont)
+graficoVcramer(input,varObjBin)
+graficoVcramer(input,log(varObjCont))
+
+```
+
+Variables que parecen relevantes (bajo este criterio) para explicar la variable objetivo continua **TD**:
+
+  1) trimestre
+  2) HS (Humedad del suelo)
+  3) Temp.Su (Temperatura del suelo)
+  4) Temp (Temperatura)
+
+En el segundo gráfico  aparece el ranking de importancia de predictores en relación al valor de la métrica V de Cramer del cruce de cada uno de ellos con la variable objetivo binaria.
+
+Variables que parecen relevantes (bajo este criterio) para explicar la variable objetivo binaria **Picorad**:
+
+  1) trimestre
+  2) HS (Humedad del suelo)
+  3) Temp.Su (Temperatura del suelo)
+  4) Temp (Temperatura)
+  
+Seguidamente se muestran los gráficos de visualización de la posible influencia de los predictores categóricos sobre la variable objetivo binaria.
+
+```{r}
+#Veo gráficamente el efecto de dos variables cualitativas sobre la binaria
+g1<-barras_targetbinaria(input$Lluvia_factor,varObjBin,"Llueve o no") 
+g2<-barras_targetbinaria(input$dia1_noche0,varObjBin,"Dia o noche") 
+g3<-barras_targetbinaria(input$trimestre,varObjBin,"trimestre") # influye
+
+```
+Con respecto a las variables continuas se presenta boxplot/histogramas para alguna de ellas
+
+```{r}
+#Veo gráficamente el efecto de dos variables cuantitativas sobre la binaria
+str(input)
+is.numeric(input["HS"])
+#g4<-boxplot_targetbinaria(input$HS,varObjBin,"HS")
+#g5<-boxplot_targetbinaria(input$Temp,varObjBin,"Temp")
+g6<-hist_targetbinaria(input$HS,varObjBin,"HS")
+g7<-hist_targetbinaria(input$Temp,varObjBin,"Temp")
+
+gridExtra::marrangeGrob(list(g1,g2,g3,g6,g7),nrow = 3,ncol=2)
+
+```
+Del gráfico mostrado se observa que la variable cualitativa "trimestre" continua siendo la más influyente con respecto a la variable binaria. "dia_noche" tiene una distribución de 0 y 1 parecida lo que no lo haría predictivo y con la variable "lluvia_factor" tenemos mucha mayor informacion de cuando no llueve.
+En cuanto a las variables cuantitativas con respecto a la variable binaria es temperatura la mas significativa, a mayr temperatura mayor radiacion. 
+
+```{r}
+corrplot(cor(cbind(varObjCont,Filter(is.numeric, input)), use="pairwise", 
+             method="pearson"), method = "number",type = "upper")
+
+```
+El análisis de correlación revela un ranking de relevancia de variables frente a **TD**:
+
+  1) HS
+  2) Temp.Su
+  3) Temp
+  4) Rn
+
+Así mismo, salen a la luz ciertas relaciones lineales relevantes entre los propios predictores entre ellas,
+
+  1) Temp.Su - Temp
+  2) Temp.Su - HR
+  3) Temp - HR
+  4) Temp.Su - HR
+
+Es posible que exita efecto de interacción entre las variables o de confusión entre ellas. Esto se puede refinar al buscar los modelos. 
+
+#-Tranformación de variables
+
+Linealizamos la relación entre la variable objetivo y las input cuantitativas para que el modelo aproveche mejor el poder predictivo de éstas, por ello procedemos con la trasnformación de variables. 
+
+```{r}
+#Transformaciones de variables
+
+#Busco las mejores transformaciones para las variables numericas con respesto a los dos tipos de variables
+input_cont<-cbind(input,Transf_Auto(Filter(is.numeric, input),varObjCont))
+
+# Cuento el número de valores diferentes para las numéricas 
+sapply(Filter(is.numeric, input)[,-ncol(Filter(is.numeric, input))],function(x) length(unique(x)))
+
+input_bin<-cbind(input,Transf_Auto(Filter(is.numeric, input)[,-10],varObjBin)) # Quito proporción de
+## missings que da problemas puesto que solo toma 3 valores distintos y está considerada como numérica.
+## por aquello de la v de cramer y sus problemillas con este tipo de variables
+str(input_bin)
+
+## Guardar conjuntos de datos para regresión lineal y logística.
+saveRDS(data.frame(input_bin,varObjBin),"C:/Users/marin/Desktop/Marina/Maestria/Clases/6. Mineria de datos y modelización predictivia/primera parte/documentos/Tarea final/todo_bin_datos")
+saveRDS(data.frame(input_cont,varObjCont),"C:/Users/marin/Desktop/Marina/Maestria/Clases/6. Mineria de datos y modelización predictivia/primera parte/documentos/Tarea final/todo_cont_datos")
+
+```
+##5. Modelos de regresión lineal para predecir la Tasa de Dosis (TD) de radiación
+
+Verificamos
+```{r datos escalados y originales evaluacion, warning=FALSE}
+
+# Voy a crear el archivo con datos estandarizados 
+inputScale<-cbind(scale(Filter(is.numeric,input)),Filter(is.factor,input))
+
+## Comienzo con la regresion lineal
+todo<-data.frame(input,varObjCont)
+todoScale<-data.frame(inputScale,varObjCont)
+
+# Creación de variables en el archivo original
+todo$Temp_prod <- todo$Temp.Su*todo$Temp 
+
+todo$log_varObjCont <-log(todo$varObjCont)
+str(todo)
+
+# Creación de variables en archivo escalado
+todoScale$Temp_prod <- todoScale$Temp.Su*todo$Temp
+
+todoScale$log_varObjCont <-log(todoScale$varObjCont)
+```
+# Partición training-test
+```{r}
+
+#Obtengo la particion de los dos data training
+set.seed(3461236)
+trainIndex <- createDataPartition(todo$varObjCont, p=0.8, list=FALSE)
+data_train <- todo[trainIndex,]
+data_test <- todo[-trainIndex,]
+
+#Obtengo la particion
+set.seed(3461236)
+trainIndexSc <- createDataPartition(todoScale$varObjCont, p=0.8, list=FALSE)
+data_trainSc <- todoScale[trainIndexSc,]
+data_testSc <- todoScale[-trainIndexSc,]
+
+```
+Generado los dos data train planteamos el modelo con y sin escalado para evaluar cual tiene mayor significancia.
+
+# Modelo completo de referencia
+
+Se construye un modelo preliminar con todas las variables
+
+```{r modelos completo estudio preliminar}
+str(data_train)
+modeloCompleto <-lm(varObjCont~.-log_varObjCont,data=data_train)
+summary(modeloCompleto)
+
+Rsq(modeloCompleto,"varObjCont",data_train)
+Rsq(modeloCompleto,"varObjCont",data_test) #no hay mucha diferencia entre train y test
+str(modeloCompleto)
+
+# Nos fijamos en la importancia de las variables. Podemos sacar un grafico que muestra lo que se pierde en R2 en train al quitarlas del modelo
+library('lmSupport')
+barplot(sort(modelEffectSizes(modeloCompleto)$Effects[-1,4],decreasing =T),las=2,main="Importancia de las variables (R2)")
+
+# Evaluar colinealidad (factor de inflacción de la varianza)
+car::vif(modeloCompleto) #alta colinealidad en Temp, Temp.Su
+
+```   
+El valor VIF de las variables categóricas no son significativas. Se procederá a modelo con datos escalados.
+
+```{r}
+#Construyo un modelo preliminar con todas las variables (archivo escalado)
+modeloCompletoSc<-lm(varObjCont~.-log_varObjCont,data=data_trainSc)
+summary(modeloCompletoSc)
+
+Rsq(modeloCompletoSc,"varObjCont",data_trainSc)
+Rsq(modeloCompletoSc,"varObjCont",data_testSc) #En test hay diferencia entre train y test al igual que sin escalado, seguramente sobren variables
+
+# Nos fijamos en la importancia de las variables. Podemos sacar un grafico que muestra lo que se pierde en R2 en train al quitarlas del modelo
+barplot(sort(modelEffectSizes(modeloCompleto)$Effects[-1,4],decreasing =T),las=2,main="Importancia de las variables (R2)")
+#Evaluar colinealidad (factor de inflacción de la varianza)
+car::vif(modeloCompletoSc)
+```
+**No se observan grandes diferencias entre los resultados con datos escalados y originales**.El modelo con valores escalados no aporta significancia al modelo, continuaremos con el modelo sin datos escalados. 
+
+En el gráfico se puede observar el efecto sobre R2 de cada una de las variables en el modelo. Se observa una gran influencia de la variable *HS*, humedad del suelo, seguido de trimestre,Rn, lluvia_factor. Se generará un modelo con dicha variable.
+
+## Modelos manuales de regrsión lineal
+# Modelo con las variables más importantes según Vcramer
+```{r}
+#Introducimos variables significativas
+modelo0<-lm(varObjCont~HS+trimestre+Rn+Lluvia_factor,data=data_train)
+summary(modelo0)
+Rsq(modelo0,"varObjCont",data_train) 
+Rsq(modelo0,"varObjCont",data_test)
+car::vif(modelo0)
+
+```
+Las variables son significativas con un R2 de 0.71 en train y 68 en test. Probaremos con un modelo con menos variables.
+
+#Modelo con menos variables
+```{r}
+#Menos variables
+modelo1<-lm(varObjCont~HS+trimestre+Rn,data=data_train)
+summary(modelo1)
+Rsq(modelo1,"varObjCont",data_train) # 0.49 de R2, variable significativa
+Rsq(modelo1,"varObjCont",data_test)
+```
+Un modelo con menos variables presenta un R2 0.65 en train y 0.63 en test, es menor por lo cual se descarta.
+
+# Modelo con más variables continua (7 variables)
+```{r}
+#Introducimos más variables
+modelo2<-lm(varObjCont~HS+trimestre+Rn+Lluvia_factor+Desc.Rn+Vviento+Temp,data=data_train)
+summary(modelo2)
+Rsq(modelo2,"varObjCont",data_train) # significativo
+Rsq(modelo2,"varObjCont",data_test)
+car::vif(modelo2)
+```
+Las variables son más significativas con un R2 de 0.72 en train y 0.70 en test
+
+#Regresión logistica
+```{r}
+#Revisamos como actua la variable con logaritmo
+
+modelo3_log<-lm(log_varObjCont~HS+trimestre+Rn+Lluvia_factor+Temp,data=data_train)
+summary(modelo3_log)
+Rsq(modelo3_log,"log_varObjCont",data_train) 
+Rsq(modelo3_log,"log_varObjCont",data_test) 
+car::vif(modelo3_log)
+```
+Las variables son más significativas con un R2 de 0.72 en train y 0.69 en test,pero menor que el modelo 2.
+
+#Regresión con 5 variables segun importancia Vcramer
+```{r}
+#modelo4<-lm(log_varObjCont~HS+trimestre+Rn+Lluvia_factor+Pres,data=data_train)
+#summary(modelo4)
+#Rsq(modelo4,"log_varObjCont",data_train) 
+#Rsq(modelo4,"log_varObjCont",data_test) 
+#car::vif(modelo4)
+
+modelo4<-lm(log_varObjCont~HS+Rn+trimestre+Rn+Lluvia_factor+Pres+Desc.Rn+Isolar+dia1_noche0+Vviento,data=data_train)
+summary(modelo4)
+Rsq(modelo4,"log_varObjCont",data_train) 
+Rsq(modelo4,"log_varObjCont",data_test) 
+car::vif(modelo4)
+```
+Las variables son las más significativas con un R2 de 0.73 en train y 0.72 en test
+
+
+#Validación cruzada repetida.
+Comprobamos las capacidades de los modelos en un esquema de validación cruzada repetida con la intención de comprobar su estabilidad ante el remuestreo. 
+El objetivo fundamenteal en esta parte es seleccionar el mejor modelo en relación sesgo-varianza y complejidad. 
+
+```{r}
+# Validación cruzada repetida
+library(caret)
+total_sup<-c()
+modelos<-sapply(list(modelo0,modelo1,modelo2, modelo3_log,modelo4),formula)
+
+for (i in 1:length(modelos)){
+  set.seed(1712)
+  vcr<-train(as.formula(modelos[[i]]), data = todo,
+             method = "lm",
+             trControl = trainControl(method="repeatedcv", number=5,
+                                      repeats=20,returnResamp="all")
+  )
+  total_sup<-rbind(total_sup,data.frame(vcr$resample,modelo=rep(paste("Modelo",i),
+                                                                nrow(vcr$resample))))
+}
+
+boxplot(Rsquared~modelo,data=total_sup,main="Precisión de los modelos") 
+aggregate(Rsquared~modelo, data = total_sup, mean) 
+aggregate(Rsquared~modelo, data = total_sup, sd) 
+
+```
+La eleccion del modelo se da entre el modelo 3 y 5. Si bien el modelo 3 no tiene presencia de outliers,tiene una bondad de ajuste ligeramente menor que el modelo 5 y es un modelo con mayor número de variables. Por lo cual optamos por el modelo 5 pues es más parsimonico que el modelo 3,cuenta con 5 variables independientes para explicar la variable objetivo. 
+
+# Evaluacion modelo final manual
+
+```{r}
+modeloFinal<-lm(formula(modelo4), data = todo)
+summary(modeloFinal)
+```
+#Selección de variable clásica
+```{r}
+#Cargo los datos depurados
+datosRadiacion<-readRDS("Tarea_RadiacionT")
+
+# Creación de variables en el archivo original
+datosRadiacion$Temp_prod <- datosRadiacion$Temp*datos$Temp.Su
+datosRadiacion$log_varObjCont <- log(varObjCont)
+str(datosRadiacion)
+
+#Hago la partición
+set.seed(123456)
+trainIndex <- createDataPartition(datosRadiacion$log_varObjCont, 
+                                  p=0.8, list=FALSE)
+data_train <- datosRadiacion[trainIndex,]
+data_test <- datosRadiacion[-trainIndex,]
+```
+
+-Modelo manual y modelo selección clásica
+
+```{r modelo manual y primer modelo seleccion clasica}
+# Este fue el modelo ganador por el procedimiento manual
+modeloManual<-modeloFinal
+
+#summary(modeloManual)
+Rsq(modeloManual,"log_varObjCont",data_train)
+(R2_ModManual<-Rsq(modeloManual,"log_varObjCont",data_test))
+(vif_ModManual<-car::vif(modeloManual))
+
+# Seleccion de variables "clásica"
+null<-lm(log_varObjCont~1, data=data_train) #Modelo minimo
+full<-lm(log_varObjCont~., 
+         data=data_train[,-c(1:2,6,11,17)]) #quitamos temp, temp.su y temp_prod por alta colinealidad
+
+#Modelo maximo 
+modeloStepAIC0<-step(null, scope=list(lower=null, upper=full), direction="both", trace = F)
+#summary(modeloStepAIC0)
+(R2_StepAIC_0<-Rsq(modeloStepAIC0,"log_varObjCont",data_test))
+(vif_StepAIC_0<-car::vif(modeloStepAIC0))
+summary(modeloStepAIC0)
+  
+```
+El modelo ha mejorado mucho, un R2 mayor de 0.75 en train y 075 en test, los valores de VIF generalizado son buenos quitando las variables Temp. Temp.su y Temp_prod pues producen colinealidad al modelo.
+
+#Seleccion de variables aleatorio
+
+```{r}
+## Seleccion aleatoria
+
+rep<-50
+prop<-0.7
+modelosGenerados<-c()
+
+for (i in 1:rep){
+  set.seed(12345+i)
+  subsample<-data_train[sample(1:nrow(data_train),
+                        prop*nrow(data_train),replace = T),]
+  formOrig<-formula(lm(varObjCont~., data=data_train))
+  full<-lm(formOrig,data=subsample)
+  #full<-lm(formula(fullTrans),data=subsample)
+  #full<-lm(formInt,data=subsample)
+  #full<-lm(formIntTrans,data=subsample) # con todas ls trasnf.  
+  #e interacc. no hay estabilidad en este caso
+  null<-lm(log_varObjCont~1,data=subsample)
+  modeloAux<-step(null,scope=list(lower=null,upper=full),
+                  direction="both",trace=0,k=log(nrow(subsample)))
+  modelosGenerados<-c(modelosGenerados,paste(sort(gsub(
+    '\n    ','',unlist(strsplit(as.character(formula(modeloAux))[3],
+                                " [+] ")))),collapse = "+"))
+}
+
+# Los 3 más frecuentes
+head(freq(modelosGenerados,sort="dec"),3)
+
+```
+
+Cuando ejecutamos el procedimiento con variables originales tenemos que los 3 modelos más repetidos son:
+
+```{r}
+#modelo aleatorio 1
+modeloAleatorio1<-lm(log_varObjCont~Desc.Rn+HR+HS+Isolar+Lluvia_factor+Pres+prop_missings+Rn+Temp+Temp_prod+trimestre+Vviento, data_train)
+summary(modeloAleatorio1)
+
+#modelo aleatorio 2
+modeloAleatorio2 <-lm(log_varObjCont~Desc.Rn+HR+HS+Isolar+Lluvia_factor+Pres+prop_missings+Rn+Temp+Temp.Su+Temp_prod+trimestre+Vviento, data_train)
+summary(modeloAleatorio2)
+car::vif(modeloAleatorio2)
+
+#modelo aleatorio 2 mejorado, quitamos las variables que causan colinealidad
+modeloAleatorio2_mej <-lm(log_varObjCont~Desc.Rn+HS+Lluvia_factor+Pres+prop_missings+Rn+trimestre+Vviento, data_train)
+summary(modeloAleatorio2_mej)
+car::vif(modeloAleatorio2_mej)
+
+#modelo aleatorio 3
+modeloAleatorio3 <-lm(log_varObjCont~Desc.Rn+HR+HS+Isolar+Isolar_dicot+Lluvia_factor+Pres+prop_missings+Rn+Temp+Temp_prod+trimestre+Vviento, data_train)
+summary(modeloAleatorio3) #1 variable no significativa
+
+# generar lista modelos seleccion aleatoria
+modAleat<-list(modeloAleatorio1,modeloAleatorio2,modeloAleatorio2_mej,modeloAleatorio3)
+
+rank_Aleat<-lapply(lapply(modAleat, coef),length)
+
+R2_Aleat<-lapply(modAleat, Rsq,'log_varObjCont', data_test)
+
+vif_Aleat<-lapply(modAleat, car::vif)
+
+# Parámetros
+tabla_modelos_aleat <- tibble(
+  Modelo = c("Aleat1","Aleat2","Aleat2_mej","Aleat3"), 
+  parametros=unlist(rank_Aleat),
+  R2_Adj= unlist(R2_Aleat)[names(unlist(R2_Aleat))=='r2_adj'],
+  VIF_max=c(max(vif_Aleat[[1]][,3]),max(vif_Aleat[[2]][,3]),max(vif_Aleat[[3]][,3]),
+            max(vif_Aleat[[4]][,3])))
+
+# Se imprime la tabla:
+library(knitr)
+knitr::kable(tabla_modelos_aleat, 
+      caption = "Modelos Selección de variables clásica",
+      booktabs = T) 
+```
+# Selección del modelo ganador
+```{r}
+## Comparación final, tomo el ganador de antes y los nuevos candidatos
+total2<-c()
+modelos2<-sapply(c(list(modeloFinal,modeloStepAIC0),
+                   modAleat),formula)
+for (i in 1:length(modelos2)){
+  set.seed(1712)
+  vcr<-train(as.formula(modelos2[[i]]), data = data_train,
+             method = "lm",
+             trControl = trainControl(method="repeatedcv", number=5, repeats=20,
+                                      returnResamp="all")
+  )
+  total2<-rbind(total2,cbind(vcr$resample[,1:2],
+                             modelo=rep(paste("Modelo",i),
+                                        nrow(vcr$resample))))
+}
+
+
+aggregate(Rsquared~modelo, data = total2, mean) 
+aggregate(Rsquared~modelo, data = total2, sd) 
+
+boxplot(Rsquared~modelo,data=total2,main="R-Square")
+```
+Las variables por selección aleatorio (modelo 3 a 6) tienen un R2 mas elevado, sin embargo conllevan alta colinealidad puesto que incluyen las variables Temp. Temp.Su y Temp_prod, por lo cual se quitaron en el modelo 5 (modeloaleatorio2_mejo) las variables no producen colinealidad, si bien tenemos un R2 menor de 0.76 con respecto a los demas modelos(a excepcion del manual) se compensa con que es un modelo más parsimónico. El modelo 2 (seleccion de variables clásica) tiene colinelidad o VIF alto en algunas variables por lo cual no se consideró.
+
+```{r}
+modeloAleatorio2_mej <-lm(log_varObjCont~Desc.Rn+HS+Lluvia_factor+Pres+prop_missings+Rn+trimestre+Vviento, data_train)
+summary(modeloAleatorio2_mej)
+car::vif(modeloAleatorio2_mej)
+```
+
+#Interpretación de los coeficientes
+```{r}
+### Interpretación de los parámetros de regresión
+cf<-round(coef(modeloAleatorio2_mej),4)
+coef(modeloAleatorio2_mej)
+
+
+cat('log(varObjCont) = ',cf[1],' + ',cf[2],'* Desc.Rn + ',cf[3],'* HS + \n'
+    ,cf[4],'*(Lluvia_factor1=1) + ',cf[5],'*Press + ',cf[6],'*prop_missings + \n'
+    ,cf[7],'*Rn + ',cf[8],'*(trimestre=2) + ',cf[9],'*(trimestre=3) + \n'
+    ,cf[10],'*(trimestre=4) + ',cf[11],'*Vviento')
+```
+
+Teniendo en cuenta que se trata de un modelo con respuesta logarítmica, lo que en el ámbito de la economía especialmente se conoce como modelo log-nivel, es habitual la intepretación de los efectos de los estimadores como la variación en % de la respuesta. Es decir el aumento de una unidad de la variable continua produce un aumento del 100xbetaCont % de la variable respuesta y la pertenencia a una categoría concreta incrementa en un 100xbetaCat % el valor de la respueta respecto a la categoría de referencia. 
+
+De esta forma tenemos,
+
+- Un aumento unitario de la variable *Desc.Rn* se traduce en un aumento del 0.0356% en los niveles de radiación. 
+
+- Un aumento unitario de *HS* provoca una disminución del 0.23% en los niveles de radiación. 
+
+- Que haya lluvia *Lluvia_factor1=1*, aumenta en 2.879% los niveles de radiación y una disminución de la variable *Press* genera una disminucion de 0.1098% los niveles de radiación.
+
+- Un aumento unitario de *Rn* aumenta en 0.0739% los niveles de radiación.
+
+- En el caso de la variable trimestre, hay una relación significativa en *trimestre3* y menor en *trimestre4* puesto que son estos periodos los que coinciden con la estacion verano y donde mayor radiación existe.
